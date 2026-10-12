@@ -13,13 +13,13 @@ from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
 
 CONFIG_PATH = "./local_deta/performance/performance.json"
-CURRENT_VERSION = "v1.3"
+CURRENT_VERSION = "v1.5"
 
 class AECPApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title(f"AECP - Altimece Encrypt Control Protocol ({CURRENT_VERSION})")
-        self.geometry("1100x900")
+        self.geometry("1100x950")
         self.resizable(True, True)
 
         # 設定の初期化と読み込み
@@ -118,7 +118,7 @@ class AECPApp(ctk.CTk):
         if path and os.path.exists(path):
             os.startfile(path)
         else:
-            messagebox.showwarning("警告", "有効な共有ディレクトリパスが設定されていません。")
+            messagebox.showwarning("警告", f"有効な共有ディレクトリパスが設定されていません。\n現在のパス: {path}")
 
     def menu_clear_logs(self):
         for console in [self.host_console, self.client_console]:
@@ -178,12 +178,12 @@ class AECPApp(ctk.CTk):
         host_dir_frame = ctk.CTkFrame(tab, corner_radius=10)
         host_dir_frame.pack(fill="x", padx=5, pady=(0, 5), anchor="n")
 
-        ctk.CTkLabel(host_dir_frame, text="📁 共有ディレクトリ操作パネル (ホスト)", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=10, pady=(5, 2))
+        ctk.CTkLabel(host_dir_frame, text="📁 共有ディレクトリ操作パネル (ホスト側)", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=10, pady=(5, 2))
         
         row1 = ctk.CTkFrame(host_dir_frame, fg_color="transparent")
         row1.pack(fill="x", padx=10, pady=5)
 
-        self.host_dir_entry = ctk.CTkEntry(row1, width=720, height=30, placeholder_text="共有ディレクトリのパスを指定...")
+        self.host_dir_entry = ctk.CTkEntry(row1, width=720, height=30, placeholder_text="例: C:\\shared または 共有フォルダのパス...")
         self.host_dir_entry.pack(side="left", padx=(0, 8), expand=True, fill="x")
         self.host_dir_entry.insert(0, self.config_data.get("shared_dir", ""))
 
@@ -267,12 +267,32 @@ class AECPApp(ctk.CTk):
         self.host_cmd_entry.bind("<Return>", lambda e: self.send_host_command())
         ctk.CTkButton(cmd_input_row, text="実行", width=70, height=30, fg_color="#991B1B", hover_color="#7F1D1D", command=self.send_host_command).pack(side="left")
 
-    # ==================== クライアントモードタブ構築 (ディレクトリ指定削除) ====================
+    # ==================== クライアントモードタブ構築 (ネットワーク共有パス入力対応) ====================
     def setup_client_tab(self):
         tab = self.tab_client
 
+        # クライアント側専用：共有ディレクトリのネットワークパス設定パネル
+        client_dir_frame = ctk.CTkFrame(tab, corner_radius=10)
+        client_dir_frame.pack(fill="x", padx=5, pady=(0, 5), anchor="n")
+
+        ctk.CTkLabel(client_dir_frame, text="📁 共有ディレクトリのパス (ホストの共有フォルダを指定)", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=10, pady=(5, 2))
+        
+        row_c = ctk.CTkFrame(client_dir_frame, fg_color="transparent")
+        row_c.pack(fill="x", padx=10, pady=5)
+
+        self.client_dir_entry = ctk.CTkEntry(row_c, width=720, height=30, placeholder_text="例: \\\\192.168.x.x\\shared などネットワークパスを入力...")
+        self.client_dir_entry.pack(side="left", padx=(0, 8), expand=True, fill="x")
+        self.client_dir_entry.insert(0, self.config_data.get("shared_dir", ""))
+
+        def save_client_dir():
+            path = self.client_dir_entry.get().strip()
+            self.save_config("shared_dir", path)
+            messagebox.showinfo("成功", f"共有ディレクトリのパスを保存しました:\n{path}")
+
+        ctk.CTkButton(row_c, text="保存", width=70, height=30, fg_color="#2b5282", hover_color="#214166", command=save_client_dir).pack(side="left")
+
         ctrl_frame = ctk.CTkFrame(tab, corner_radius=10)
-        ctrl_frame.pack(fill="x", padx=5, pady=5, anchor="n")
+        ctrl_frame.pack(fill="x", padx=5, pady=5)
 
         ctk.CTkLabel(ctrl_frame, text="接続方法の選択:", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=10, pady=(5, 2))
         self.client_mode_seg = ctk.CTkSegmentedButton(ctrl_frame, values=["IPアドレス接続", "ユーザー名認証"], command=self.on_client_mode_change)
@@ -387,8 +407,7 @@ class AECPApp(ctk.CTk):
             self.append_log(sys_line, is_host)
 
         try:
-            # クライアント側でディレクトリが指定されていない場合のチェック
-            current_dir = self.host_dir_entry.get().strip() if is_host else self.config_data.get("shared_dir", "")
+            current_dir = self.host_dir_entry.get().strip() if is_host else self.client_dir_entry.get().strip()
 
             if cmd == "help":
                 log_sys("=== AECP Command List ===")
@@ -403,7 +422,7 @@ class AECPApp(ctk.CTk):
 
             elif cmd in ("dir", "ls"):
                 if not current_dir or not os.path.exists(current_dir):
-                    log_sys(f"エラー: 有効な共有ディレクトリが設定されていません（ホスト側の設定をご確認ください）: {current_dir}")
+                    log_sys(f"エラー: 共有ディレクトリにアクセスできません: {current_dir}")
                 else:
                     log_sys(f"--- Directory Tree: {current_dir} ---")
                     for root, dirs, files in os.walk(current_dir):
@@ -520,10 +539,10 @@ class AECPApp(ctk.CTk):
 
         editor = self.host_file_editor if is_h else self.client_file_editor
         content = editor.get("0.0", "end-1c")
-        d = self.host_dir_entry.get().strip() if is_h else self.config_data.get("shared_dir", "")
+        d = self.host_dir_entry.get().strip() if is_h else self.client_dir_entry.get().strip()
 
         if not d or not os.path.exists(d):
-            messagebox.showerror("エラー", "有効な共有ディレクトリが設定されていません。")
+            messagebox.showerror("エラー", f"共有ディレクトリにアクセスできません:\n{d}")
             return
 
         target_file = self.current_open_filepath
@@ -549,7 +568,7 @@ class AECPApp(ctk.CTk):
         if is_host:
             d = self.host_dir_entry.get().strip()
         else:
-            d = self.config_data.get("shared_dir", "")
+            d = self.client_dir_entry.get().strip()
         return os.path.join(d, "aecp_server.enc") if d else ""
 
     def toggle_host_session(self):
@@ -561,7 +580,6 @@ class AECPApp(ctk.CTk):
 
             pwd = self.host_pass_entry.get()
             self.save_config("session_password", pwd)
-            # ホスト側のディレクトリパスを config にも保存
             self.save_config("shared_dir", self.host_dir_entry.get().strip())
 
             self.is_host_active = True
@@ -590,7 +608,7 @@ class AECPApp(ctk.CTk):
         if not self.is_client_connected:
             target = self.get_target_file(is_host=False)
             if not target or not os.path.exists(os.path.dirname(target)):
-                messagebox.showerror("エラー", "有効な共有ディレクトリが設定されていません（ホスト側の共有ディレクトリパスをご確認ください）。")
+                messagebox.showerror("エラー", f"共有ディレクトリにアクセスできません。\nパスを確認してください:\n{target}")
                 return
 
             display_name = self.config_data.get("display_name", "User")
@@ -610,7 +628,7 @@ class AECPApp(ctk.CTk):
                 with open(target, "wb") as f:
                     f.write(new_data)
             except Exception as e:
-                messagebox.showerror("認証エラー", f"接続失敗（パスワード不一致等）: {e}")
+                messagebox.showerror("認証エラー", f"接続失敗（パスワード不一致またはファイル読込エラー）:\n{e}")
                 self.is_client_connected = False
                 self.btn_client_toggle.configure(text="🔗 セッションに接続 (ログイン)", fg_color="#2b8252", hover_color="#216641")
                 return
@@ -637,7 +655,9 @@ class AECPApp(ctk.CTk):
             with open(target, "wb") as f:
                 f.write(new_enc)
         except Exception as e:
-            messagebox.showerror("エラー", f"送信失敗: {e}")
+            console = self.host_console if is_host else self.client_console
+            console.insert("end", f"[ERROR] ログ送信失敗: {e}\n")
+            console.see("end")
 
     def send_host_message(self):
         if not self.is_host_active: return
