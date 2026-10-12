@@ -13,12 +13,13 @@ from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
 
 CONFIG_PATH = "./local_deta/performance/performance.json"
-CURRENT_VERSION = "v1.5"
+CURRENT_VERSION = "v2.1"
+DEFAULT_PORT = 9876
 
 class AECPApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title(f"AECP - Altimece Encrypt Control Protocol ({CURRENT_VERSION})")
+        self.title(f"AECP - Altimece Encrypt Control Protocol ({CURRENT_VERSION}) [TCP Network Edition]")
         self.geometry("1100x900")
         self.resizable(True, True)
 
@@ -30,10 +31,15 @@ class AECPApp(ctk.CTk):
         self.hostname = socket.gethostname()
         self.my_ipv4 = self.get_local_ipv4()
         
-        # セッションフラグと現在開いているファイルパス
+        # セッションフラグと現在開いているファイルパス、ソケット関連
         self.is_host_active = False
         self.is_client_connected = False
         self.current_open_filepath = None
+        
+        self.server_socket = None
+        self.client_socket = None
+        self.client_connections = []  # ホスト側が保持する接続中クライアントのリスト
+        self.network_logs = []        # 共有ログのリスト
 
         # UI構築
         self.setup_menu()
@@ -41,6 +47,7 @@ class AECPApp(ctk.CTk):
 
     def init_directories(self):
         os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+        os.makedirs("./local_workspace", exist_ok=True)
 
     def load_config(self):
         if os.path.exists(CONFIG_PATH):
@@ -50,7 +57,6 @@ class AECPApp(ctk.CTk):
             except Exception:
                 pass
         return {
-            "shared_dir": "", 
             "session_password": "AECP_SECRET_2026", 
             "username": "User_" + socket.gethostname()[:5],
             "display_name": "Altice User",
@@ -97,7 +103,7 @@ class AECPApp(ctk.CTk):
         menubar = tk.Menu(self)
 
         file_menu = tk.Menu(menubar, tearoff=0)
-        file_menu.add_command(label="共有フォルダを開く", command=self.menu_open_dir)
+        file_menu.add_command(label="ワークスペースフォルダを開く", command=self.menu_open_dir)
         file_menu.add_separator()
         file_menu.add_command(label="終了", command=self.quit)
         menubar.add_cascade(label="ファイル", menu=file_menu)
@@ -114,11 +120,9 @@ class AECPApp(ctk.CTk):
         self.configure(menu=menubar)
 
     def menu_open_dir(self):
-        path = self.config_data.get("shared_dir", "")
-        if path and os.path.exists(path):
+        path = "./local_workspace"
+        if os.path.exists(path):
             os.startfile(path)
-        else:
-            messagebox.showwarning("警告", f"有効な共有ディレクトリパスが設定されていません。\n現在のパス: {path}")
 
     def menu_clear_logs(self):
         for console in [self.host_console, self.client_console]:
@@ -127,7 +131,7 @@ class AECPApp(ctk.CTk):
             chat.delete("0.0", "end")
 
     def menu_about(self):
-        messagebox.showinfo("ソフトウェア情報", f"Altimece Encrypt Control Protocol (AECP)\nVersion {CURRENT_VERSION}\nCopyright 2026 Altice-Works Co., Ltd.")
+        messagebox.showinfo("ソフトウェア情報", f"Altimece Encrypt Control Protocol (AECP)\nVersion {CURRENT_VERSION} [TCP Network]\nCopyright 2026 Altice-Works Co., Ltd.")
 
     def open_settings_dialog(self):
         dlg = ctk.CTkToplevel(self)
@@ -175,39 +179,9 @@ class AECPApp(ctk.CTk):
     def setup_host_tab(self):
         tab = self.tab_host
 
-        host_dir_frame = ctk.CTkFrame(tab, corner_radius=10)
-        host_dir_frame.pack(fill="x", padx=5, pady=(0, 5), anchor="n")
-
-        ctk.CTkLabel(host_dir_frame, text="📁 共有ディレクトリ操作パネル (ホスト側設定 / ※要ネットワーク共有)", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=10, pady=(5, 2))
-        
-        row1 = ctk.CTkFrame(host_dir_frame, fg_color="transparent")
-        row1.pack(fill="x", padx=10, pady=5)
-
-        self.host_dir_entry = ctk.CTkEntry(row1, width=720, height=30, placeholder_text="例: C:\\aecp_share (※右クリック等でネットワーク共有を設定してください)")
-        self.host_dir_entry.pack(side="left", padx=(0, 8), expand=True, fill="x")
-        self.host_dir_entry.insert(0, self.config_data.get("shared_dir", ""))
-
-        def browse_host():
-            path = filedialog.askdirectory()
-            if path:
-                self.host_dir_entry.delete(0, "end")
-                self.host_dir_entry.insert(0, path)
-                self.save_config("shared_dir", path)
-
-        def create_host():
-            path = self.host_dir_entry.get().strip()
-            if not path:
-                messagebox.showerror("エラー", "パスを入力してください。")
-                return
-            try:
-                os.makedirs(path, exist_ok=True)
-                self.save_config("shared_dir", path)
-                messagebox.showinfo("成功", f"ディレクトリを作成しました:\n{path}")
-            except Exception as e:
-                messagebox.showerror("エラー", f"作成失敗: {e}")
-
-        ctk.CTkButton(row1, text="参照", width=70, height=30, command=browse_host).pack(side="left", padx=(0, 5))
-        ctk.CTkButton(row1, text="作成", width=70, height=30, fg_color="#2b5282", hover_color="#214166", command=create_host).pack(side="left")
+        info_frame = ctk.CTkFrame(tab, corner_radius=10)
+        info_frame.pack(fill="x", padx=5, pady=(0, 5), anchor="n")
+        ctk.CTkLabel(info_frame, text=f"🌐 ホスト接続情報: 自端末IP [{self.my_ipv4}] / ポート [{DEFAULT_PORT}]", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=10, pady=8)
 
         ctrl_frame = ctk.CTkFrame(tab, corner_radius=10)
         ctrl_frame.pack(fill="x", padx=5, pady=5)
@@ -217,7 +191,7 @@ class AECPApp(ctk.CTk):
         self.host_pass_entry.pack(fill="x", padx=10, pady=(0, 8))
         self.host_pass_entry.insert(0, self.config_data.get("session_password", "AECP_SECRET_2026"))
 
-        self.btn_host_toggle = ctk.CTkButton(ctrl_frame, text="🚀 セッションルームを開設 (ホスト開始)", fg_color="#2b8252", hover_color="#216641", height=38, font=("Helvetica", 12, "bold"), command=self.toggle_host_session)
+        self.btn_host_toggle = ctk.CTkButton(ctrl_frame, text="🚀 TCPサーバー開設 (ホスト開始)", fg_color="#2b8252", hover_color="#216641", height=38, font=("Helvetica", 12, "bold"), command=self.toggle_host_session)
         self.btn_host_toggle.pack(fill="x", padx=10, pady=(0, 10))
 
         multi_frame = ctk.CTkFrame(tab, fg_color="transparent")
@@ -267,29 +241,24 @@ class AECPApp(ctk.CTk):
         self.host_cmd_entry.bind("<Return>", lambda e: self.send_host_command())
         ctk.CTkButton(cmd_input_row, text="実行", width=70, height=30, fg_color="#991B1B", hover_color="#7F1D1D", command=self.send_host_command).pack(side="left")
 
-    # ==================== クライアントモードタブ構築 (パス指定不要) ====================
+    # ==================== クライアントモードタブ構築 ====================
     def setup_client_tab(self):
         tab = self.tab_client
 
         ctrl_frame = ctk.CTkFrame(tab, corner_radius=10)
         ctrl_frame.pack(fill="x", padx=5, pady=5, anchor="n")
 
-        ctk.CTkLabel(ctrl_frame, text="接続方法の選択:", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=10, pady=(5, 2))
-        self.client_mode_seg = ctk.CTkSegmentedButton(ctrl_frame, values=["IPアドレス接続", "ユーザー名認証"], command=self.on_client_mode_change)
-        self.client_mode_seg.pack(fill="x", padx=10, pady=(0, 5))
-        saved_mode = self.config_data.get("connect_mode", "IPアドレス")
-        self.client_mode_seg.set(saved_mode)
-
-        self.client_dynamic_frame = ctk.CTkFrame(ctrl_frame, fg_color="transparent")
-        self.client_dynamic_frame.pack(fill="x", padx=10, pady=2)
-        self.build_client_dynamic_inputs(saved_mode)
+        ctk.CTkLabel(ctrl_frame, text="接続先ホストの IPv4 アドレス:", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=10, pady=(5, 2))
+        self.client_ip_entry = ctk.CTkEntry(ctrl_frame, height=30)
+        self.client_ip_entry.pack(fill="x", padx=10, pady=(0, 5))
+        self.client_ip_entry.insert(0, self.config_data.get("host_ip", "127.0.0.1"))
 
         ctk.CTkLabel(ctrl_frame, text="セッションマスターパスワード:", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=10, pady=(2, 2))
         self.client_pass_entry = ctk.CTkEntry(ctrl_frame, show="*", height=30)
         self.client_pass_entry.pack(fill="x", padx=10, pady=(0, 8))
         self.client_pass_entry.insert(0, self.config_data.get("session_password", "AECP_SECRET_2026"))
 
-        self.btn_client_toggle = ctk.CTkButton(ctrl_frame, text="🔗 セッションに接続 (ログイン)", fg_color="#2b8252", hover_color="#216641", height=38, font=("Helvetica", 12, "bold"), command=self.toggle_client_session)
+        self.btn_client_toggle = ctk.CTkButton(ctrl_frame, text="🔗 TCPサーバーに接続 (ログイン)", fg_color="#2b8252", hover_color="#216641", height=38, font=("Helvetica", 12, "bold"), command=self.toggle_client_session)
         self.btn_client_toggle.pack(fill="x", padx=10, pady=(0, 10))
 
         multi_frame = ctk.CTkFrame(tab, fg_color="transparent")
@@ -339,79 +308,59 @@ class AECPApp(ctk.CTk):
         self.client_cmd_entry.bind("<Return>", lambda e: self.send_client_command())
         ctk.CTkButton(cmd_input_row, text="実行", width=70, height=30, fg_color="#991B1B", hover_color="#7F1D1D", command=self.send_client_command).pack(side="left")
 
-    def on_client_mode_change(self, mode):
-        self.save_config("connect_mode", mode)
-        self.build_client_dynamic_inputs(mode)
+    # ==================== TCPネットワーク通信システム ====================
+    def broadcast_message(self, message_str, sender_socket=None):
+        """ホストから全クライアント（および自分自身）へ暗号化パケットを送信"""
+        self.network_logs.append(message_str)
+        self.update_ui_logs(message_str, is_host=True)
 
-    def build_client_dynamic_inputs(self, mode):
-        for widget in self.client_dynamic_frame.winfo_children():
-            widget.destroy()
+        pwd = self.host_pass_entry.get()
+        key = self.derive_key(pwd)
+        payload = self.encrypt_data(message_str.encode('utf-8'), key)
+        packet = len(payload).to_bytes(4, 'big') + payload
 
-        if mode == "IPアドレス接続":
-            ctk.CTkLabel(self.client_dynamic_frame, text="接続先ホストの IPv4 アドレス:", font=("Helvetica", 11, "bold")).pack(anchor="w", pady=(0, 2))
-            self.client_ip_entry = ctk.CTkEntry(self.client_dynamic_frame, height=30)
-            self.client_ip_entry.pack(fill="x")
-            self.client_ip_entry.insert(0, self.config_data.get("host_ip", "127.0.0.1"))
-        else:
-            row = ctk.CTkFrame(self.client_dynamic_frame, fg_color="transparent")
-            row.pack(fill="x")
+        # 全クライアントに送信
+        dead_clients = []
+        for client_sock in self.client_connections:
+            if client_sock != sender_socket:
+                try:
+                    client_sock.sendall(packet)
+                except Exception:
+                    dead_clients.append(client_sock)
+        for dead in dead_clients:
+            if dead in self.client_connections:
+                self.client_connections.remove(dead)
 
-            sub1 = ctk.CTkFrame(row, fg_color="transparent")
-            sub1.pack(side="left", fill="x", expand=True, padx=(0, 10))
-            ctk.CTkLabel(sub1, text="ユーザー名:", font=("Helvetica", 11, "bold")).pack(anchor="w", pady=(0, 2))
-            self.client_user_entry = ctk.CTkEntry(sub1, height=30)
-            self.client_user_entry.pack(fill="x")
-            self.client_user_entry.insert(0, self.config_data.get("username", ""))
-
-            sub2 = ctk.CTkFrame(row, fg_color="transparent")
-            sub2.pack(side="left", fill="x", expand=True)
-            ctk.CTkLabel(sub2, text="接続パスワード:", font=("Helvetica", 11, "bold")).pack(anchor="w", pady=(0, 2))
-            self.client_conn_pass_entry = ctk.CTkEntry(sub2, show="*", height=30)
-            self.client_conn_pass_entry.pack(fill="x")
-            self.client_conn_pass_entry.insert(0, self.config_data.get("connect_password", ""))
-
-    # ==================== ターゲットファイルパス自動生成 (クライアントパス不要化) ====================
-    def get_target_file(self, is_host=True):
+    def send_to_network(self, message_str, is_host=True):
+        """メッセージやログをネットワーク経由で送信する"""
         if is_host:
-            d = self.host_dir_entry.get().strip()
+            self.broadcast_message(message_str)
         else:
-            # クライアントの場合、ディレクトリのパス指定は不要。
-            # 入力されたホストのIPアドレスから自動的にネットワーク共有パス (UNCパス) を構築する。
-            # デフォルトの共有フォルダ名としてホスト側フォルダの末尾名、または "aecp_share" を使用
-            host_ip = "127.0.0.1"
+            if not self.is_client_connected or not self.client_socket:
+                messagebox.showerror("エラー", "サーバーに接続されていません。")
+                return
             try:
-                if hasattr(self, 'client_ip_entry') and self.client_ip_entry:
-                    host_ip = self.client_ip_entry.get().strip() or "127.0.0.1"
-            except Exception:
-                host_ip = self.config_data.get("host_ip", "127.0.0.1")
+                pwd = self.client_pass_entry.get()
+                key = self.derive_key(pwd)
+                payload = self.encrypt_data(message_str.encode('utf-8'), key)
+                packet = len(payload).to_bytes(4, 'big') + payload
+                self.client_socket.sendall(packet)
+            except Exception as e:
+                self.client_console.insert("end", f"[ERROR] 送信失敗: {e}\n")
+                self.client_console.see("end")
 
-            # ホスト側の共有ディレクトリパスから共有フォルダ名（例: aecp_share）を抽出、またはデフォルト使用
-            host_dir_setting = self.config_data.get("shared_dir", "")
-            share_folder_name = os.path.basename(os.path.normpath(host_dir_setting)) if host_dir_setting else "aecp_share"
-            if not share_folder_name or share_folder_name in ("", ".", "\\"):
-                share_folder_name = "aecp_share"
+    def update_ui_logs(self, text_line, is_host=True):
+        """UIのターミナルとチャットを更新"""
+        for is_h in ([True, False] if is_host else [False]):
+            console = self.host_console if is_h else self.client_console
+            console.insert("end", text_line + "\n")
+            console.see("end")
 
-            d = f"\\\\{host_ip}\\{share_folder_name}"
-        return os.path.join(d, "aecp_server.enc") if d else ""
+            chat_box = self.host_chat_box if is_h else self.client_chat_box
+            if "[MSG]" in text_line or "AUTH" in text_line or "SERVER" in text_line:
+                chat_box.insert("end", text_line + "\n")
+                chat_box.see("end")
 
-    def get_current_working_dir(self, is_host=True):
-        if is_host:
-            return self.host_dir_entry.get().strip()
-        else:
-            host_ip = "127.0.0.1"
-            try:
-                if hasattr(self, 'client_ip_entry') and self.client_ip_entry:
-                    host_ip = self.client_ip_entry.get().strip() or "127.0.0.1"
-            except Exception:
-                host_ip = self.config_data.get("host_ip", "127.0.0.1")
-
-            host_dir_setting = self.config_data.get("shared_dir", "")
-            share_folder_name = os.path.basename(os.path.normpath(host_dir_setting)) if host_dir_setting else "aecp_share"
-            if not share_folder_name or share_folder_name in ("", ".", "\\"):
-                share_folder_name = "aecp_share"
-            return f"\\\\{host_ip}\\{share_folder_name}"
-
-    # ==================== コマンド処理システム ====================
     def handle_command(self, cmd_text, is_host=True):
         parts = cmd_text.strip().split()
         if not parts:
@@ -421,106 +370,48 @@ class AECPApp(ctk.CTk):
         name = "Host" if is_host else self.config_data.get("display_name", "User")
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-        self.append_log(f"[{timestamp}] [{name}] > {cmd_text}", is_host)
+        log_msg = f"[{timestamp}] [{name}] > {cmd_text}"
+        self.send_to_network(log_msg, is_host)
 
         def log_sys(msg):
+            # 修正箇所: strftime の閉じ括弧抜けを修正
             sys_line = f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [CMD_SYSTEM] {msg}"
-            self.append_log(sys_line, is_host)
+            self.send_to_network(sys_line, is_host)
 
         try:
-            current_dir = self.get_current_working_dir(is_host)
+            workspace_dir = "./local_workspace"
 
             if cmd == "help":
                 log_sys("=== AECP Command List ===")
-                log_sys("  dir / ls : ディレクトリツリーを表示")
+                log_sys("  dir / ls : ワークスペース内のファイル一覧を表示")
                 log_sys("  cat <ファイル名> : 指定したファイルの内容をターミナルに出力")
                 log_sys("  disconnect : セッションを切断")
-                log_sys("  ip-connect <ターゲットIPv4> <パスワード> : IPとパスワードで接続")
-                log_sys("  username-connect <username> <パスワード> : ユーザー名とパスワードで接続")
-                log_sys("  open <パス または ファイル名> : ファイルを開いてエディターに読み込む")
+                log_sys("  open <ファイル名> : ワークスペース内のファイルを開く")
                 log_sys("  close : 開いているファイルを閉じる")
                 log_sys("  help : コマンドリストを表示")
 
             elif cmd in ("dir", "ls"):
-                if not current_dir or not os.path.exists(current_dir):
-                    log_sys(f"エラー: 共有ディレクトリにアクセスできません: {current_dir}")
-                else:
-                    log_sys(f"--- Directory Tree: {current_dir} ---")
-                    for root, dirs, files in os.walk(current_dir):
-                        level = root.replace(current_dir, "").count(os.sep)
-                        indent = " " * 4 * level
-                        log_sys(f"{indent}{os.path.basename(root)}/")
-                        sub_indent = " " * 4 * (level + 1)
-                        for f in files:
-                            log_sys(f"{sub_indent}{f}")
+                log_sys(f"--- Workspace Files ({workspace_dir}) ---")
+                for f in os.listdir(workspace_dir):
+                    log_sys(f"  {f}")
 
             elif cmd == "cat":
                 if len(parts) >= 2:
-                    filepath = " ".join(parts[1:])
-                    full_path = filepath if os.path.isabs(filepath) else os.path.join(current_dir, filepath)
+                    filename = parts[1]
+                    full_path = os.path.join(workspace_dir, filename)
                     if os.path.exists(full_path) and os.path.isfile(full_path):
                         with open(full_path, "r", encoding="utf-8") as f:
-                            file_content = f.read()
-                        log_sys(f"=== Cat: {full_path} ===\n{file_content}")
+                            content = f.read()
+                        log_sys(f"=== Cat: {filename} ===\n{content}")
                     else:
-                        log_sys(f"ファイルが見つかりません: {full_path}")
+                        log_sys(f"ファイルが見つかりません: {filename}")
                 else:
                     log_sys("構文エラー: cat <ファイル名>")
 
-            elif cmd == "disconnect":
-                if is_host:
-                    if self.is_host_active:
-                        self.toggle_host_session()
-                        log_sys("ホストセッションを切断しました。")
-                else:
-                    if self.is_client_connected:
-                        self.toggle_client_session()
-                        log_sys("クライアントセッションを切断しました。")
-
-            elif cmd == "ip-connect":
-                if len(parts) >= 3:
-                    target_ip = parts[1]
-                    pwd = parts[2]
-                    if not is_host:
-                        self.client_mode_seg.set("IPアドレス接続")
-                        self.build_client_dynamic_inputs("IPアドレス接続")
-                        self.client_ip_entry.delete(0, "end")
-                        self.client_ip_entry.insert(0, target_ip)
-                        self.client_pass_entry.delete(0, "end")
-                        self.client_pass_entry.insert(0, pwd)
-                        if not self.is_client_connected:
-                            self.toggle_client_session()
-                        log_sys(f"IP: {target_ip} で接続処理を実行しました。")
-                    else:
-                        log_sys("ホストモードではクライアント接続コマンドを実行できません。")
-                else:
-                    log_sys("構文エラー: ip-connect <ターゲットIPv4> <パスワード>")
-
-            elif cmd == "username-connect":
-                if len(parts) >= 3:
-                    username = parts[1]
-                    pwd = parts[2]
-                    if not is_host:
-                        self.client_mode_seg.set("ユーザー名認証")
-                        self.build_client_dynamic_inputs("ユーザー名認証")
-                        self.client_user_entry.delete(0, "end")
-                        self.client_user_entry.insert(0, username)
-                        self.client_conn_pass_entry.delete(0, "end")
-                        self.client_conn_pass_entry.insert(0, pwd)
-                        self.client_pass_entry.delete(0, "end")
-                        self.client_pass_entry.insert(0, pwd)
-                        if not self.is_client_connected:
-                            self.toggle_client_session()
-                        log_sys(f"User: {username} で接続処理を実行しました。")
-                    else:
-                        log_sys("ホストモードではクライアント接続コマンドを実行できません。")
-                else:
-                    log_sys("構文エラー: username-connect <username> <パスワード>")
-
             elif cmd == "open":
                 if len(parts) >= 2:
-                    filepath = " ".join(parts[1:])
-                    full_path = filepath if os.path.isabs(filepath) else os.path.join(current_dir, filepath)
+                    filename = parts[1]
+                    full_path = os.path.join(workspace_dir, filename)
                     if os.path.exists(full_path) and os.path.isfile(full_path):
                         self.current_open_filepath = full_path
                         with open(full_path, "r", encoding="utf-8") as f:
@@ -528,11 +419,11 @@ class AECPApp(ctk.CTk):
                         editor = self.host_file_editor if is_host else self.client_file_editor
                         editor.delete("0.0", "end")
                         editor.insert("0.0", content)
-                        log_sys(f"ファイルを開きました: {full_path}")
+                        log_sys(f"ファイルを開きました: {filename}")
                     else:
-                        log_sys(f"ファイルが見つかりません: {full_path}")
+                        log_sys(f"ファイルが見つかりません: {filename}")
                 else:
-                    log_sys("構文エラー: open <フルファイルパス または ファイル名>")
+                    log_sys("構文エラー: open <ファイル名>")
 
             elif cmd == "close":
                 self.current_open_filepath = None
@@ -540,35 +431,32 @@ class AECPApp(ctk.CTk):
                 editor.delete("0.0", "end")
                 log_sys("エディターを閉じました。")
 
-            else:
-                line = f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [{name}] [CMD]: {cmd_text}"
-                self.append_log(line, is_host)
-                log_sys("コマンドをネットワークログに送信しました。")
+            elif cmd == "disconnect":
+                if is_host:
+                    self.toggle_host_session()
+                else:
+                    self.toggle_client_session()
 
         except Exception as e:
-            log_sys(f"[ERROR] コマンド実行中にエラーが発生しました: {e}")
+            log_sys(f"[ERROR] コマンド実行エラー: {e}")
 
-    # ==================== ファイル実ファイル保存ロジック ====================
+    # ==================== ファイル保存ロジック ====================
     def save_shared_file(self, mode):
         is_h = (mode == "Host")
         if is_h and not self.is_host_active:
-            messagebox.showwarning("警告", "ホストセッションが開始されていません。")
+            messagebox.showwarning("警告", "ホストサーバーが開始されていません。")
             return
         if not is_h and not self.is_client_connected:
-            messagebox.showwarning("警告", "セッションに接続していません。")
+            messagebox.showwarning("警告", "サーバーに接続していません。")
             return
 
         editor = self.host_file_editor if is_h else self.client_file_editor
         content = editor.get("0.0", "end-1c")
-        d = self.get_current_working_dir(is_h)
-
-        if not d or not os.path.exists(d):
-            messagebox.showerror("エラー", f"共有ディレクトリにアクセスできません:\n{d}")
-            return
+        workspace_dir = "./local_workspace"
 
         target_file = self.current_open_filepath
         if not target_file:
-            target_file = os.path.join(d, "default_workspace.txt")
+            target_file = os.path.join(workspace_dir, "default_workspace.txt")
             self.current_open_filepath = target_file
 
         try:
@@ -577,108 +465,164 @@ class AECPApp(ctk.CTk):
 
             name = "Host" if is_h else self.config_data.get("display_name", "User")
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            line = f"[{timestamp}] [{name}] [FILE_SYNC]: Saved to real file ({os.path.basename(target_file)})."
-            self.append_log(line, is_h)
+            line = f"[{timestamp}] [{name}] [FILE_SYNC]: Saved to ({os.path.basename(target_file)})."
+            self.send_to_network(line, is_h)
             
-            messagebox.showinfo("成功", f"実ファイルに保存しました:\n{target_file}")
+            messagebox.showinfo("成功", f"ローカルワークスペースに保存しました:\n{target_file}")
         except Exception as e:
             messagebox.showerror("エラー", f"ファイルの保存に失敗しました: {e}")
 
-    # ==================== 通信・同期ロジック ====================
+    # ==================== TCP通信の開始・停止 ====================
     def toggle_host_session(self):
         if not self.is_host_active:
-            target = self.get_target_file(is_host=True)
-            if not target or not os.path.exists(os.path.dirname(target)):
-                messagebox.showerror("エラー", "有効な共有ディレクトリを指定してください。")
-                return
-
-            pwd = self.host_pass_entry.get()
+            pwd = self.host_pass_entry.get().strip()
             self.save_config("session_password", pwd)
-            self.save_config("shared_dir", self.host_dir_entry.get().strip())
+
+            try:
+                self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                self.server_socket.bind(('0.0.0.0', DEFAULT_PORT))
+                self.server_socket.listen(5)
+            except Exception as e:
+                messagebox.showerror("エラー", f"TCPサーバーの起動に失敗しました (ポート使用中など):\n{e}")
+                return
 
             self.is_host_active = True
-            self.btn_host_toggle.configure(text="⏹ セッションルームを閉じる", fg_color="#a83232", hover_color="#802424")
+            self.btn_host_toggle.configure(text="⏹ TCPサーバーを停止", fg_color="#a83232", hover_color="#802424")
 
-            key = self.derive_key(pwd)
-            init_log = f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [SERVER] HOST_STARTED: Room initialized.\n"
-            try:
-                enc = self.encrypt_data(init_log.encode('utf-8'), key)
-                with open(target, "wb") as f:
-                    f.write(enc)
-            except Exception as e:
-                messagebox.showerror("エラー", f"初期化失敗: {e}")
-                self.is_host_active = False
-                self.btn_host_toggle.configure(text="🚀 セッションルームを開設 (ホスト開始)", fg_color="#2b8252", hover_color="#216641")
-                return
-
-            threading.Thread(target=self.sync_loop, args=(True,), daemon=True).start()
-            self.host_console.insert("end", "[Host] セッションを開設しました。\n")
+            threading.Thread(target=self.host_accept_loop, daemon=True).start()
+            self.host_console.insert("end", f"[Host] TCPサーバーをポート {DEFAULT_PORT} で開設しました。\n")
         else:
             self.is_host_active = False
-            self.btn_host_toggle.configure(text="🚀 セッションルームを開設 (ホスト開始)", fg_color="#2b8252", hover_color="#216641")
-            self.host_console.insert("end", "[Host] セッションを閉じました。\n")
+            try:
+                if self.server_socket:
+                    self.server_socket.close()
+            except Exception:
+                pass
+            for sock in self.client_connections:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+            self.client_connections.clear()
+
+            self.btn_host_toggle.configure(text="🚀 TCPサーバー開設 (ホスト開始)", fg_color="#2b8252", hover_color="#216641")
+            self.host_console.insert("end", "[Host] TCPサーバーを停止しました。\n")
+
+    def host_accept_loop(self):
+        """ホストがクライアントからの接続を受け付けるループ"""
+        while self.is_host_active:
+            try:
+                self.server_socket.settimeout(1.0)
+                conn, addr = self.server_socket.accept()
+                self.client_connections.append(conn)
+                threading.Thread(target=self.host_client_handler, args=(conn, addr), daemon=True).start()
+            except socket.timeout:
+                continue
+            except Exception:
+                break
+
+    def host_client_handler(self, conn, addr):
+        """接続してきたクライアントからのデータを受信するハンドラー"""
+        while self.is_host_active:
+            try:
+                length_bytes = conn.recv(4)
+                if not length_bytes:
+                    break
+                length = int.from_bytes(length_bytes, 'big')
+                data = bytearray()
+                while len(data) < length:
+                    packet = conn.recv(length - len(data))
+                    if not packet:
+                        break
+                    data.extend(packet)
+
+                pwd = self.host_pass_entry.get()
+                key = self.derive_key(pwd)
+                decrypted = self.decrypt_data(bytes(data), key).decode('utf-8')
+
+                # 全クライアントおよびホストにブロードキャスト
+                self.broadcast_message(decrypted, sender_socket=conn)
+            except Exception:
+                break
+        if conn in self.client_connections:
+            self.client_connections.remove(conn)
+        try:
+            conn.close()
+        except Exception:
+            pass
 
     def toggle_client_session(self):
         if not self.is_client_connected:
-            target = self.get_target_file(is_host=False)
-            if not target or not os.path.exists(os.path.dirname(target)):
-                messagebox.showerror("エラー", f"ホストの共有ディレクトリにアクセスできません。\nIPアドレスやネットワーク共有設定を確認してください:\n{target}")
-                return
-
-            display_name = self.config_data.get("display_name", "User")
+            host_ip = self.client_ip_entry.get().strip()
             pwd = self.client_pass_entry.get().strip()
+            display_name = self.config_data.get("display_name", "User")
 
-            self.is_client_connected = True
-            self.btn_client_toggle.configure(text="🔌 セッションから切断", fg_color="#a83232", hover_color="#802424")
+            if not host_ip:
+                messagebox.showerror("エラー", "接続先ホストのIPv4アドレスを入力してください。")
+                return
 
             try:
-                key = self.derive_key(pwd)
-                with open(target, "rb") as f:
-                    enc = f.read()
-                existing = self.decrypt_data(enc, key).decode('utf-8')
-                
-                login_line = f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [{display_name}] AUTH: Connected to session.\n"
-                new_data = self.encrypt_data((existing + login_line).encode('utf-8'), key)
-                with open(target, "wb") as f:
-                    f.write(new_data)
+                self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.client_socket.connect((host_ip, DEFAULT_PORT))
             except Exception as e:
-                messagebox.showerror("認証エラー", f"接続失敗（パスワード不一致またはファイル読込エラー）:\n{e}")
-                self.is_client_connected = False
-                self.btn_client_toggle.configure(text="🔗 セッションに接続 (ログイン)", fg_color="#2b8252", hover_color="#216641")
+                messagebox.showerror("接続エラー", f"サーバーへの接続に失敗しました:\n{e}")
                 return
 
-            threading.Thread(target=self.sync_loop, args=(False,), daemon=True).start()
-            self.client_console.insert("end", "[Client] セッションに接続しました。\n")
+            self.is_client_connected = True
+            self.btn_client_toggle.configure(text="🔌 サーバーから切断", fg_color="#a83232", hover_color="#802424")
+
+            # 接続通知送信
+            try:
+                login_line = f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [{display_name}] AUTH: Connected to TCP server."
+                key = self.derive_key(pwd)
+                payload = self.encrypt_data(login_line.encode('utf-8'), key)
+                packet = len(payload).to_bytes(4, 'big') + payload
+                self.client_socket.sendall(packet)
+            except Exception as e:
+                messagebox.showerror("エラー", f"認証パケットの送信失敗: {e}")
+
+            threading.Thread(target=self.client_receive_loop, daemon=True).start()
+            self.client_console.insert("end", f"[Client] ホスト ({host_ip}) に接続しました。\n")
         else:
             self.is_client_connected = False
-            self.btn_client_toggle.configure(text="🔗 セッションに接続 (ログイン)", fg_color="#2b8252", hover_color="#216641")
+            try:
+                if self.client_socket:
+                    self.client_socket.close()
+            except Exception:
+                pass
+            self.btn_client_toggle.configure(text="🔗 TCPサーバーに接続 (ログイン)", fg_color="#2b8252", hover_color="#216641")
             self.client_console.insert("end", "[Client] 切断しました。\n")
 
-    def append_log(self, text_line, is_host=True):
-        target = self.get_target_file(is_host)
-        pwd = self.host_pass_entry.get() if is_host else self.client_pass_entry.get()
-        key = self.derive_key(pwd)
+    def client_receive_loop(self):
+        """クライアントがホストからデータを受信するループ"""
+        while self.is_client_connected:
+            try:
+                length_bytes = self.client_socket.recv(4)
+                if not length_bytes:
+                    break
+                length = int.from_bytes(length_bytes, 'big')
+                data = bytearray()
+                while len(data) < length:
+                    packet = self.client_socket.recv(length - len(data))
+                    if not packet:
+                        break
+                    data.extend(packet)
 
-        try:
-            with open(target, "rb") as f:
-                enc = f.read()
-            existing = self.decrypt_data(enc, key).decode('utf-8')
-            
-            new_content = existing + text_line + "\n"
-            new_enc = self.encrypt_data(new_content.encode('utf-8'), key)
-            with open(target, "wb") as f:
-                f.write(new_enc)
-        except Exception as e:
-            console = self.host_console if is_host else self.client_console
-            console.insert("end", f"[ERROR] ログ送信失敗: {e}\n")
-            console.see("end")
+                pwd = self.client_pass_entry.get()
+                key = self.derive_key(pwd)
+                decrypted = self.decrypt_data(bytes(data), key).decode('utf-8')
+
+                self.update_ui_logs(decrypted, is_host=False)
+            except Exception:
+                break
 
     def send_host_message(self):
         if not self.is_host_active: return
         msg = self.host_msg_entry.get().strip()
         if not msg: return
         line = f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [Host] [MSG]: {msg}"
-        self.append_log(line, True)
+        self.send_to_network(line, is_host=True)
         self.host_msg_entry.delete(0, "end")
 
     def send_host_command(self):
@@ -693,7 +637,7 @@ class AECPApp(ctk.CTk):
         if not msg: return
         name = self.config_data.get("display_name", "User")
         line = f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [{name}] [MSG]: {msg}"
-        self.append_log(line, False)
+        self.send_to_network(line, is_host=False)
         self.client_msg_entry.delete(0, "end")
 
     def send_client_command(self):
@@ -701,37 +645,6 @@ class AECPApp(ctk.CTk):
         if not cmd: return
         self.handle_command(cmd, is_host=False)
         self.client_cmd_entry.delete(0, "end")
-
-    def sync_loop(self, is_host=True):
-        while (is_host and self.is_host_active) or (not is_host and self.is_client_connected):
-            try:
-                target = self.get_target_file(is_host)
-                pwd = self.host_pass_entry.get() if is_host else self.client_pass_entry.get()
-                key = self.derive_key(pwd)
-
-                if target and os.path.exists(target):
-                    with open(target, "rb") as f:
-                        enc = f.read()
-                    text = self.decrypt_data(enc, key).decode('utf-8')
-
-                    console = self.host_console if is_host else self.client_console
-                    curr_term = console.get("0.0", "end-1c")
-                    if text.strip() != curr_term.strip():
-                        console.delete("0.0", "end")
-                        console.insert("0.0", text)
-                        console.see("end")
-
-                    chat_box = self.host_chat_box if is_host else self.client_chat_box
-                    chat_lines = [line for line in text.splitlines() if "[MSG]" in line or "AUTH" in line or "HOST_STARTED" in line]
-                    chat_text = "\n".join(chat_lines)
-                    curr_chat = chat_box.get("0.0", "end-1c")
-                    if chat_text.strip() != curr_chat.strip():
-                        chat_box.delete("0.0", "end")
-                        chat_box.insert("0.0", chat_text)
-                        chat_box.see("end")
-            except Exception:
-                pass
-            time.sleep(1.5)
 
 if __name__ == "__main__":
     app = AECPApp()
