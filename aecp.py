@@ -13,7 +13,7 @@ from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
 
 CONFIG_PATH = "./local_deta/performance/performance.json"
-CURRENT_VERSION = "v2.1"
+CURRENT_VERSION = "v2.2"
 DEFAULT_PORT = 9876
 
 class AECPApp(ctk.CTk):
@@ -319,7 +319,6 @@ class AECPApp(ctk.CTk):
         payload = self.encrypt_data(message_str.encode('utf-8'), key)
         packet = len(payload).to_bytes(4, 'big') + payload
 
-        # 全クライアントに送信
         dead_clients = []
         for client_sock in self.client_connections:
             if client_sock != sender_socket:
@@ -374,7 +373,6 @@ class AECPApp(ctk.CTk):
         self.send_to_network(log_msg, is_host)
 
         def log_sys(msg):
-            # 修正箇所: strftime の閉じ括弧抜けを修正
             sys_line = f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [CMD_SYSTEM] {msg}"
             self.send_to_network(sys_line, is_host)
 
@@ -541,7 +539,6 @@ class AECPApp(ctk.CTk):
                 key = self.derive_key(pwd)
                 decrypted = self.decrypt_data(bytes(data), key).decode('utf-8')
 
-                # 全クライアントおよびホストにブロードキャスト
                 self.broadcast_message(decrypted, sender_socket=conn)
             except Exception:
                 break
@@ -564,15 +561,24 @@ class AECPApp(ctk.CTk):
 
             try:
                 self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.client_socket.settimeout(4.0)  # 4秒でタイムアウト
                 self.client_socket.connect((host_ip, DEFAULT_PORT))
+                self.client_socket.settimeout(None) # タイムアウト解除
             except Exception as e:
-                messagebox.showerror("接続エラー", f"サーバーへの接続に失敗しました:\n{e}")
+                messagebox.showerror(
+                    "接続エラー (接続拒否)", 
+                    f"ホスト ({host_ip}) への接続に失敗しました。\n\n"
+                    f"【考えられる原因】\n"
+                    f"1. ホスト側で「TCPサーバー開設」ボタンがまだ押されていない\n"
+                    f"2. IPアドレス ({host_ip}) が間違っている\n"
+                    f"3. ホスト側のファイアウォール（セキュリティソフト）がポート {DEFAULT_PORT} をブロックしている\n\n"
+                    f"詳細: {e}"
+                )
                 return
 
             self.is_client_connected = True
             self.btn_client_toggle.configure(text="🔌 サーバーから切断", fg_color="#a83232", hover_color="#802424")
 
-            # 接続通知送信
             try:
                 login_line = f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [{display_name}] AUTH: Connected to TCP server."
                 key = self.derive_key(pwd)
