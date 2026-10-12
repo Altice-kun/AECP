@@ -13,7 +13,7 @@ from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
 
 CONFIG_PATH = "./local_deta/performance/performance.json"
-CURRENT_VERSION = "v1.2"
+CURRENT_VERSION = "v1.3"
 
 class AECPApp(ctk.CTk):
     def __init__(self):
@@ -267,46 +267,12 @@ class AECPApp(ctk.CTk):
         self.host_cmd_entry.bind("<Return>", lambda e: self.send_host_command())
         ctk.CTkButton(cmd_input_row, text="実行", width=70, height=30, fg_color="#991B1B", hover_color="#7F1D1D", command=self.send_host_command).pack(side="left")
 
-    # ==================== クライアントモードタブ構築 ====================
+    # ==================== クライアントモードタブ構築 (ディレクトリ指定削除) ====================
     def setup_client_tab(self):
         tab = self.tab_client
 
-        client_dir_frame = ctk.CTkFrame(tab, corner_radius=10)
-        client_dir_frame.pack(fill="x", padx=5, pady=(0, 5), anchor="n")
-
-        ctk.CTkLabel(client_dir_frame, text="📁 共有ディレクトリ操作パネル (クライアント)", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=10, pady=(5, 2))
-        
-        row2 = ctk.CTkFrame(client_dir_frame, fg_color="transparent")
-        row2.pack(fill="x", padx=10, pady=5)
-
-        self.client_dir_entry = ctk.CTkEntry(row2, width=720, height=30, placeholder_text="共有ディレクトリのパスを指定...")
-        self.client_dir_entry.pack(side="left", padx=(0, 8), expand=True, fill="x")
-        self.client_dir_entry.insert(0, self.config_data.get("shared_dir", ""))
-
-        def browse_client():
-            path = filedialog.askdirectory()
-            if path:
-                self.client_dir_entry.delete(0, "end")
-                self.client_dir_entry.insert(0, path)
-                self.save_config("shared_dir", path)
-
-        def create_client():
-            path = self.client_dir_entry.get().strip()
-            if not path:
-                messagebox.showerror("エラー", "パスを入力してください。")
-                return
-            try:
-                os.makedirs(path, exist_ok=True)
-                self.save_config("shared_dir", path)
-                messagebox.showinfo("成功", f"ディレクトリを作成しました:\n{path}")
-            except Exception as e:
-                messagebox.showerror("エラー", f"作成失敗: {e}")
-
-        ctk.CTkButton(row2, text="参照", width=70, height=30, command=browse_client).pack(side="left", padx=(0, 5))
-        ctk.CTkButton(row2, text="作成", width=70, height=30, fg_color="#2b5282", hover_color="#214166", command=create_client).pack(side="left")
-
         ctrl_frame = ctk.CTkFrame(tab, corner_radius=10)
-        ctrl_frame.pack(fill="x", padx=5, pady=5)
+        ctrl_frame.pack(fill="x", padx=5, pady=5, anchor="n")
 
         ctk.CTkLabel(ctrl_frame, text="接続方法の選択:", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=10, pady=(5, 2))
         self.client_mode_seg = ctk.CTkSegmentedButton(ctrl_frame, values=["IPアドレス接続", "ユーザー名認証"], command=self.on_client_mode_change)
@@ -421,6 +387,9 @@ class AECPApp(ctk.CTk):
             self.append_log(sys_line, is_host)
 
         try:
+            # クライアント側でディレクトリが指定されていない場合のチェック
+            current_dir = self.host_dir_entry.get().strip() if is_host else self.config_data.get("shared_dir", "")
+
             if cmd == "help":
                 log_sys("=== AECP Command List ===")
                 log_sys("  dir / ls : ディレクトリツリーを表示")
@@ -433,13 +402,12 @@ class AECPApp(ctk.CTk):
                 log_sys("  help : コマンドリストを表示")
 
             elif cmd in ("dir", "ls"):
-                d = self.host_dir_entry.get().strip() if is_host else self.client_dir_entry.get().strip()
-                if not d or not os.path.exists(d):
-                    log_sys(f"エラー: 有効な共有ディレクトリが設定されていません: {d}")
+                if not current_dir or not os.path.exists(current_dir):
+                    log_sys(f"エラー: 有効な共有ディレクトリが設定されていません（ホスト側の設定をご確認ください）: {current_dir}")
                 else:
-                    log_sys(f"--- Directory Tree: {d} ---")
-                    for root, dirs, files in os.walk(d):
-                        level = root.replace(d, "").count(os.sep)
+                    log_sys(f"--- Directory Tree: {current_dir} ---")
+                    for root, dirs, files in os.walk(current_dir):
+                        level = root.replace(current_dir, "").count(os.sep)
                         indent = " " * 4 * level
                         log_sys(f"{indent}{os.path.basename(root)}/")
                         sub_indent = " " * 4 * (level + 1)
@@ -449,8 +417,7 @@ class AECPApp(ctk.CTk):
             elif cmd == "cat":
                 if len(parts) >= 2:
                     filepath = " ".join(parts[1:])
-                    d = self.host_dir_entry.get().strip() if is_host else self.client_dir_entry.get().strip()
-                    full_path = filepath if os.path.isabs(filepath) else os.path.join(d, filepath)
+                    full_path = filepath if os.path.isabs(filepath) else os.path.join(current_dir, filepath)
                     if os.path.exists(full_path) and os.path.isfile(full_path):
                         with open(full_path, "r", encoding="utf-8") as f:
                             file_content = f.read()
@@ -513,8 +480,7 @@ class AECPApp(ctk.CTk):
             elif cmd == "open":
                 if len(parts) >= 2:
                     filepath = " ".join(parts[1:])
-                    d = self.host_dir_entry.get().strip() if is_host else self.client_dir_entry.get().strip()
-                    full_path = filepath if os.path.isabs(filepath) else os.path.join(d, filepath)
+                    full_path = filepath if os.path.isabs(filepath) else os.path.join(current_dir, filepath)
                     if os.path.exists(full_path) and os.path.isfile(full_path):
                         self.current_open_filepath = full_path
                         with open(full_path, "r", encoding="utf-8") as f:
@@ -554,10 +520,10 @@ class AECPApp(ctk.CTk):
 
         editor = self.host_file_editor if is_h else self.client_file_editor
         content = editor.get("0.0", "end-1c")
-        d = self.host_dir_entry.get().strip() if is_h else self.client_dir_entry.get().strip()
+        d = self.host_dir_entry.get().strip() if is_h else self.config_data.get("shared_dir", "")
 
         if not d or not os.path.exists(d):
-            messagebox.showerror("エラー", "有効な共有ディレクトリが指定されていません。")
+            messagebox.showerror("エラー", "有効な共有ディレクトリが設定されていません。")
             return
 
         target_file = self.current_open_filepath
@@ -578,12 +544,12 @@ class AECPApp(ctk.CTk):
         except Exception as e:
             messagebox.showerror("エラー", f"ファイルの保存に失敗しました: {e}")
 
-    # ==================== 通信・同期ロジック (ログのみ同期) ====================
+    # ==================== 通信・同期ロジック ====================
     def get_target_file(self, is_host=True):
         if is_host:
             d = self.host_dir_entry.get().strip()
         else:
-            d = self.client_dir_entry.get().strip()
+            d = self.config_data.get("shared_dir", "")
         return os.path.join(d, "aecp_server.enc") if d else ""
 
     def toggle_host_session(self):
@@ -595,6 +561,8 @@ class AECPApp(ctk.CTk):
 
             pwd = self.host_pass_entry.get()
             self.save_config("session_password", pwd)
+            # ホスト側のディレクトリパスを config にも保存
+            self.save_config("shared_dir", self.host_dir_entry.get().strip())
 
             self.is_host_active = True
             self.btn_host_toggle.configure(text="⏹ セッションルームを閉じる", fg_color="#a83232", hover_color="#802424")
@@ -622,7 +590,7 @@ class AECPApp(ctk.CTk):
         if not self.is_client_connected:
             target = self.get_target_file(is_host=False)
             if not target or not os.path.exists(os.path.dirname(target)):
-                messagebox.showerror("エラー", "有効な共有ディレクトリを指定してください。")
+                messagebox.showerror("エラー", "有効な共有ディレクトリが設定されていません（ホスト側の共有ディレクトリパスをご確認ください）。")
                 return
 
             display_name = self.config_data.get("display_name", "User")
@@ -707,7 +675,6 @@ class AECPApp(ctk.CTk):
                 pwd = self.host_pass_entry.get() if is_host else self.client_pass_entry.get()
                 key = self.derive_key(pwd)
 
-                # サーバーログ（ターミナル・チャット）のみを同期（エディターの自動上書きは廃止）
                 if target and os.path.exists(target):
                     with open(target, "rb") as f:
                         enc = f.read()
