@@ -5,6 +5,7 @@ import threading
 import time
 import datetime
 import json
+import subprocess
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
@@ -13,13 +14,14 @@ from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
 
 CONFIG_PATH = "./local_deta/performance/performance.json"
-CURRENT_VERSION = "v2.2"
+CURRENT_VERSION = "v2.3"
 DEFAULT_PORT = 9876
+DISCOVERY_PORT = 9877
 
 class AECPApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title(f"AECP - Altimece Encrypt Control Protocol ({CURRENT_VERSION}) [TCP Network Edition]")
+        self.title(f"AECP - Altimece Encrypt Control Protocol ({CURRENT_VERSION}) [Zero-Config TCP Edition]")
         self.geometry("1100x900")
         self.resizable(True, True)
 
@@ -38,6 +40,7 @@ class AECPApp(ctk.CTk):
         
         self.server_socket = None
         self.client_socket = None
+        self.discovery_socket = None
         self.client_connections = []  # ホスト側が保持する接続中クライアントのリスト
         self.network_logs = []        # 共有ログのリスト
 
@@ -131,7 +134,7 @@ class AECPApp(ctk.CTk):
             chat.delete("0.0", "end")
 
     def menu_about(self):
-        messagebox.showinfo("ソフトウェア情報", f"Altimece Encrypt Control Protocol (AECP)\nVersion {CURRENT_VERSION} [TCP Network]\nCopyright 2026 Altice-Works Co., Ltd.")
+        messagebox.showinfo("ソフトウェア情報", f"Altimece Encrypt Control Protocol (AECP)\nVersion {CURRENT_VERSION} [Zero-Config]\nCopyright 2026 Altice-Works Co., Ltd.")
 
     def open_settings_dialog(self):
         dlg = ctk.CTkToplevel(self)
@@ -181,7 +184,7 @@ class AECPApp(ctk.CTk):
 
         info_frame = ctk.CTkFrame(tab, corner_radius=10)
         info_frame.pack(fill="x", padx=5, pady=(0, 5), anchor="n")
-        ctk.CTkLabel(info_frame, text=f"🌐 ホスト接続情報: 自端末IP [{self.my_ipv4}] / ポート [{DEFAULT_PORT}]", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=10, pady=8)
+        ctk.CTkLabel(info_frame, text=f"🌐 ホスト接続情報: 自端末IP [{self.my_ipv4}] / ポート [{DEFAULT_PORT}] (ファイアウォール自動開放)", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=10, pady=8)
 
         ctrl_frame = ctk.CTkFrame(tab, corner_radius=10)
         ctrl_frame.pack(fill="x", padx=5, pady=5)
@@ -191,7 +194,7 @@ class AECPApp(ctk.CTk):
         self.host_pass_entry.pack(fill="x", padx=10, pady=(0, 8))
         self.host_pass_entry.insert(0, self.config_data.get("session_password", "AECP_SECRET_2026"))
 
-        self.btn_host_toggle = ctk.CTkButton(ctrl_frame, text="🚀 TCPサーバー開設 (ホスト開始)", fg_color="#2b8252", hover_color="#216641", height=38, font=("Helvetica", 12, "bold"), command=self.toggle_host_session)
+        self.btn_host_toggle = ctk.CTkButton(ctrl_frame, text="🚀 TCPサーバー開設 (自動設定付き)", fg_color="#2b8252", hover_color="#216641", height=38, font=("Helvetica", 12, "bold"), command=self.toggle_host_session)
         self.btn_host_toggle.pack(fill="x", padx=10, pady=(0, 10))
 
         multi_frame = ctk.CTkFrame(tab, fg_color="transparent")
@@ -248,7 +251,12 @@ class AECPApp(ctk.CTk):
         ctrl_frame = ctk.CTkFrame(tab, corner_radius=10)
         ctrl_frame.pack(fill="x", padx=5, pady=5, anchor="n")
 
-        ctk.CTkLabel(ctrl_frame, text="接続先ホストの IPv4 アドレス:", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=10, pady=(5, 2))
+        # 自動検索ボタン付きIP入力欄
+        ip_row = ctk.CTkFrame(ctrl_frame, fg_color="transparent")
+        ip_row.pack(fill="x", padx=10, pady=(5, 2))
+        ctk.CTkLabel(ip_row, text="接続先ホストの IPv4 アドレス:", font=("Helvetica", 11, "bold")).pack(side="left", anchor="w")
+        ctk.CTkButton(ip_row, text="🔍 ホストを自動検索", width=130, height=25, fg_color="#2b5282", hover_color="#214166", command=self.auto_discover_host).pack(side="right")
+
         self.client_ip_entry = ctk.CTkEntry(ctrl_frame, height=30)
         self.client_ip_entry.pack(fill="x", padx=10, pady=(0, 5))
         self.client_ip_entry.insert(0, self.config_data.get("host_ip", "127.0.0.1"))
@@ -308,9 +316,75 @@ class AECPApp(ctk.CTk):
         self.client_cmd_entry.bind("<Return>", lambda e: self.send_client_command())
         ctk.CTkButton(cmd_input_row, text="実行", width=70, height=30, fg_color="#991B1B", hover_color="#7F1D1D", command=self.send_client_command).pack(side="left")
 
+    # ==================== 自動ファイアウォール設定 & ホスト自動検索 ====================
+    def apply_firewall_rules(self):
+        """Windowsファイアウォールにポートの例外ルールを自動追加する"""
+        try:
+            # TCPポート9876の許可ルールを追加
+            cmd_tcp = f'netsh advfirewall firewall add rule name="AECP_TCP_{DEFAULT_PORT}" dir=in action=allow protocol=TCP localport={DEFAULT_PORT}'
+            subprocess.run(cmd_tcp, shell=True, capture_output=True)
+            # UDPポート9877の許可ルールを追加（自動検索用）
+            cmd_udp = f'netsh advfirewall firewall add rule name="AECP_UDP_{DISCOVERY_PORT}" dir=in action=allow protocol=UDP localport={DISCOVERY_PORT}'
+            subprocess.run(cmd_udp, shell=True, capture_output=True)
+        except Exception:
+            pass
+
+    def start_discovery_responder(self):
+        """ホスト側：クライアントからの自動検索ブロードキャストに応答するリスナー"""
+        try:
+            self.discovery_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.discovery_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.discovery_socket.bind(('0.0.0.0', DISCOVERY_PORT))
+            while self.is_host_active:
+                try:
+                    self.discovery_socket.settimeout(1.0)
+                    data, addr = self.discovery_socket.recvfrom(1024)
+                    if data == b"AECP_DISCOVER_REQUEST":
+                        response = f"AECP_HOST_RESPONSE:{self.my_ipv4}".encode('utf-8')
+                        self.discovery_socket.sendto(response, addr)
+                except socket.timeout:
+                    continue
+                except Exception:
+                    break
+        except Exception:
+            pass
+
+    def auto_discover_host(self):
+        """クライアント側：LAN内のホストを自動で探してIPアドレスをセットする"""
+        self.client_console.insert("end", "[System] ネットワーク上のホストを自動検索中...\n")
+        self.client_console.see("end")
+
+        def discover_thread():
+            found_ip = None
+            try:
+                disc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                disc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                disc_sock.settimeout(2.0)
+                disc_sock.sendto(b"AECP_DISCOVER_REQUEST", ('255.255.255.255', DISCOVERY_PORT))
+                
+                data, addr = disc_sock.recvfrom(1024)
+                if data.startswith(b"AECP_HOST_RESPONSE:"):
+                    found_ip = data.decode('utf-8').split(":")[1]
+                disc_sock.close()
+            except Exception:
+                pass
+
+            # UIスレッドで結果を反映
+            def update_ui():
+                if found_ip:
+                    self.client_ip_entry.delete(0, "end")
+                    self.client_ip_entry.insert(0, found_ip)
+                    self.client_console.insert("end", f"[System] ホストを発見しました！ IP: {found_ip}\n")
+                else:
+                    self.client_console.insert("end", "[System] ホストが見つかりませんでした。IPアドレスを直接入力してください。\n")
+                self.client_console.see("end")
+            
+            self.after(0, update_ui)
+
+        threading.Thread(target=discover_thread, daemon=True).start()
+
     # ==================== TCPネットワーク通信システム ====================
     def broadcast_message(self, message_str, sender_socket=None):
-        """ホストから全クライアント（および自分自身）へ暗号化パケットを送信"""
         self.network_logs.append(message_str)
         self.update_ui_logs(message_str, is_host=True)
 
@@ -331,7 +405,6 @@ class AECPApp(ctk.CTk):
                 self.client_connections.remove(dead)
 
     def send_to_network(self, message_str, is_host=True):
-        """メッセージやログをネットワーク経由で送信する"""
         if is_host:
             self.broadcast_message(message_str)
         else:
@@ -349,7 +422,6 @@ class AECPApp(ctk.CTk):
                 self.client_console.see("end")
 
     def update_ui_logs(self, text_line, is_host=True):
-        """UIのターミナルとチャットを更新"""
         for is_h in ([True, False] if is_host else [False]):
             console = self.host_console if is_h else self.client_console
             console.insert("end", text_line + "\n")
@@ -438,7 +510,6 @@ class AECPApp(ctk.CTk):
         except Exception as e:
             log_sys(f"[ERROR] コマンド実行エラー: {e}")
 
-    # ==================== ファイル保存ロジック ====================
     def save_shared_file(self, mode):
         is_h = (mode == "Host")
         if is_h and not self.is_host_active:
@@ -476,39 +547,40 @@ class AECPApp(ctk.CTk):
             pwd = self.host_pass_entry.get().strip()
             self.save_config("session_password", pwd)
 
+            # ファイアウォールに自動例外追加
+            self.apply_firewall_rules()
+
             try:
                 self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 self.server_socket.bind(('0.0.0.0', DEFAULT_PORT))
                 self.server_socket.listen(5)
             except Exception as e:
-                messagebox.showerror("エラー", f"TCPサーバーの起動に失敗しました (ポート使用中など):\n{e}")
+                messagebox.showerror("エラー", f"TCPサーバーの起動に失敗しました:\n{e}")
                 return
 
             self.is_host_active = True
             self.btn_host_toggle.configure(text="⏹ TCPサーバーを停止", fg_color="#a83232", hover_color="#802424")
 
             threading.Thread(target=self.host_accept_loop, daemon=True).start()
-            self.host_console.insert("end", f"[Host] TCPサーバーをポート {DEFAULT_PORT} で開設しました。\n")
+            threading.Thread(target=self.start_discovery_responder, daemon=True).start()
+            self.host_console.insert("end", f"[Host] TCPサーバーをポート {DEFAULT_PORT} で開設しました（ファイアウォール自動設定完了）。\n")
         else:
             self.is_host_active = False
             try:
-                if self.server_socket:
-                    self.server_socket.close()
+                if self.server_socket: self.server_socket.close()
+                if self.discovery_socket: self.discovery_socket.close()
             except Exception:
                 pass
             for sock in self.client_connections:
-                try:
-                    sock.close()
-                except Exception:
-                    pass
+                try: sock.close()
+                except Exception: pass
             self.client_connections.clear()
 
-            self.btn_host_toggle.configure(text="🚀 TCPサーバー開設 (ホスト開始)", fg_color="#2b8252", hover_color="#216641")
+            self.btn_host_toggle.configure(text="🚀 TCPサーバー開設 (自動設定付き)", fg_color="#2b8252", hover_color="#216641")
             self.host_console.insert("end", "[Host] TCPサーバーを停止しました。\n")
 
     def host_accept_loop(self):
-        """ホストがクライアントからの接続を受け付けるループ"""
         while self.is_host_active:
             try:
                 self.server_socket.settimeout(1.0)
@@ -521,18 +593,15 @@ class AECPApp(ctk.CTk):
                 break
 
     def host_client_handler(self, conn, addr):
-        """接続してきたクライアントからのデータを受信するハンドラー"""
         while self.is_host_active:
             try:
                 length_bytes = conn.recv(4)
-                if not length_bytes:
-                    break
+                if not length_bytes: break
                 length = int.from_bytes(length_bytes, 'big')
                 data = bytearray()
                 while len(data) < length:
                     packet = conn.recv(length - len(data))
-                    if not packet:
-                        break
+                    if not packet: break
                     data.extend(packet)
 
                 pwd = self.host_pass_entry.get()
@@ -544,10 +613,8 @@ class AECPApp(ctk.CTk):
                 break
         if conn in self.client_connections:
             self.client_connections.remove(conn)
-        try:
-            conn.close()
-        except Exception:
-            pass
+        try: conn.close()
+        except Exception: pass
 
     def toggle_client_session(self):
         if not self.is_client_connected:
@@ -556,22 +623,21 @@ class AECPApp(ctk.CTk):
             display_name = self.config_data.get("display_name", "User")
 
             if not host_ip:
-                messagebox.showerror("エラー", "接続先ホストのIPv4アドレスを入力してください。")
+                messagebox.showerror("エラー", "接続先ホストのIPv4アドレスを入力してください（「ホストを自動検索」も使えます）。")
                 return
 
             try:
                 self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.client_socket.settimeout(4.0)  # 4秒でタイムアウト
+                self.client_socket.settimeout(4.0)
                 self.client_socket.connect((host_ip, DEFAULT_PORT))
-                self.client_socket.settimeout(None) # タイムアウト解除
+                self.client_socket.settimeout(None)
             except Exception as e:
                 messagebox.showerror(
-                    "接続エラー (接続拒否)", 
+                    "接続エラー", 
                     f"ホスト ({host_ip}) への接続に失敗しました。\n\n"
-                    f"【考えられる原因】\n"
-                    f"1. ホスト側で「TCPサーバー開設」ボタンがまだ押されていない\n"
-                    f"2. IPアドレス ({host_ip}) が間違っている\n"
-                    f"3. ホスト側のファイアウォール（セキュリティソフト）がポート {DEFAULT_PORT} をブロックしている\n\n"
+                    f"【確認ポイント】\n"
+                    f"1. ホスト側PCで「TCPサーバー開設」が緑色ボタンになっているか\n"
+                    f"2. 両方のPCが同じWi-Fi（またはネットワーク）に接続しているか\n\n"
                     f"詳細: {e}"
                 )
                 return
@@ -593,26 +659,22 @@ class AECPApp(ctk.CTk):
         else:
             self.is_client_connected = False
             try:
-                if self.client_socket:
-                    self.client_socket.close()
+                if self.client_socket: self.client_socket.close()
             except Exception:
                 pass
             self.btn_client_toggle.configure(text="🔗 TCPサーバーに接続 (ログイン)", fg_color="#2b8252", hover_color="#216641")
             self.client_console.insert("end", "[Client] 切断しました。\n")
 
     def client_receive_loop(self):
-        """クライアントがホストからデータを受信するループ"""
         while self.is_client_connected:
             try:
                 length_bytes = self.client_socket.recv(4)
-                if not length_bytes:
-                    break
+                if not length_bytes: break
                 length = int.from_bytes(length_bytes, 'big')
                 data = bytearray()
                 while len(data) < length:
                     packet = self.client_socket.recv(length - len(data))
-                    if not packet:
-                        break
+                    if not packet: break
                     data.extend(packet)
 
                 pwd = self.client_pass_entry.get()
