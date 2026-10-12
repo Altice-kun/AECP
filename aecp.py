@@ -6,6 +6,8 @@ import time
 import datetime
 import json
 import subprocess
+import urllib.request
+import xml.etree.ElementTree as ET
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
@@ -14,15 +16,15 @@ from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
 
 CONFIG_PATH = "./local_deta/performance/performance.json"
-CURRENT_VERSION = "v2.3"
+CURRENT_VERSION = "v2.4"
 DEFAULT_PORT = 9876
 DISCOVERY_PORT = 9877
 
 class AECPApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title(f"AECP - Altimece Encrypt Control Protocol ({CURRENT_VERSION}) [Zero-Config TCP Edition]")
-        self.geometry("1100x900")
+        self.title(f"AECP - Altimece Encrypt Control Protocol ({CURRENT_VERSION}) [Universal Network Edition]")
+        self.geometry("1100x920")
         self.resizable(True, True)
 
         # 設定の初期化と読み込み
@@ -31,7 +33,8 @@ class AECPApp(ctk.CTk):
 
         # 自端末情報
         self.hostname = socket.gethostname()
-        self.my_ipv4 = self.get_local_ipv4()
+        self.my_local_ipv4 = self.get_local_ipv4()
+        self.my_public_ipv4 = "取得中..."
         
         # セッションフラグと現在開いているファイルパス、ソケット関連
         self.is_host_active = False
@@ -43,6 +46,9 @@ class AECPApp(ctk.CTk):
         self.discovery_socket = None
         self.client_connections = []  # ホスト側が保持する接続中クライアントのリスト
         self.network_logs = []        # 共有ログのリスト
+
+        # 非同期でグローバルIPを取得
+        threading.Thread(target=self.fetch_public_ip, daemon=True).start()
 
         # UI構築
         self.setup_menu()
@@ -81,6 +87,13 @@ class AECPApp(ctk.CTk):
                 return s.getsockname()[0]
         except Exception:
             return '127.0.0.1'
+
+    def fetch_public_ip(self):
+        try:
+            req = urllib.request.urlopen("https://api.ipify.org", timeout=4)
+            self.my_public_ipv4 = req.read().decode('utf-8')
+        except Exception:
+            self.my_public_ipv4 = "取得失敗（オフラインまたは制限中）"
 
     def derive_key(self, password):
         return hashlib.sha256(password.encode('utf-8')).digest()
@@ -134,7 +147,7 @@ class AECPApp(ctk.CTk):
             chat.delete("0.0", "end")
 
     def menu_about(self):
-        messagebox.showinfo("ソフトウェア情報", f"Altimece Encrypt Control Protocol (AECP)\nVersion {CURRENT_VERSION} [Zero-Config]\nCopyright 2026 Altice-Works Co., Ltd.")
+        messagebox.showinfo("ソフトウェア情報", f"Altimece Encrypt Control Protocol (AECP)\nVersion {CURRENT_VERSION} [Universal]\nCopyright 2026 Altice-Works Co., Ltd.")
 
     def open_settings_dialog(self):
         dlg = ctk.CTkToplevel(self)
@@ -184,7 +197,12 @@ class AECPApp(ctk.CTk):
 
         info_frame = ctk.CTkFrame(tab, corner_radius=10)
         info_frame.pack(fill="x", padx=5, pady=(0, 5), anchor="n")
-        ctk.CTkLabel(info_frame, text=f"🌐 ホスト接続情報: 自端末IP [{self.my_ipv4}] / ポート [{DEFAULT_PORT}] (ファイアウォール自動開放)", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=10, pady=8)
+        
+        ctk.CTkLabel(info_frame, text="🌐 接続用IPアドレス情報", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=10, pady=(5, 2))
+        self.lbl_local_ip = ctk.CTkLabel(info_frame, text=f"• 同ネットワーク用 (ローカルIP): {self.my_local_ipv4}", font=("Consolas", 11))
+        self.lbl_local_ip.pack(anchor="w", padx=20, pady=(0, 2))
+        self.lbl_public_ip = ctk.CTkLabel(info_frame, text=f"• 別ネットワーク用 (グローバルIP): {self.my_public_ipv4}", font=("Consolas", 11))
+        self.lbl_public_ip.pack(anchor="w", padx=20, pady=(0, 8))
 
         ctrl_frame = ctk.CTkFrame(tab, corner_radius=10)
         ctrl_frame.pack(fill="x", padx=5, pady=5)
@@ -194,7 +212,7 @@ class AECPApp(ctk.CTk):
         self.host_pass_entry.pack(fill="x", padx=10, pady=(0, 8))
         self.host_pass_entry.insert(0, self.config_data.get("session_password", "AECP_SECRET_2026"))
 
-        self.btn_host_toggle = ctk.CTkButton(ctrl_frame, text="🚀 TCPサーバー開設 (自動設定付き)", fg_color="#2b8252", hover_color="#216641", height=38, font=("Helvetica", 12, "bold"), command=self.toggle_host_session)
+        self.btn_host_toggle = ctk.CTkButton(ctrl_frame, text="🚀 TCPサーバー開設 (UPnP自動開放＋FW解除)", fg_color="#2b8252", hover_color="#216641", height=38, font=("Helvetica", 12, "bold"), command=self.toggle_host_session)
         self.btn_host_toggle.pack(fill="x", padx=10, pady=(0, 10))
 
         multi_frame = ctk.CTkFrame(tab, fg_color="transparent")
@@ -251,11 +269,10 @@ class AECPApp(ctk.CTk):
         ctrl_frame = ctk.CTkFrame(tab, corner_radius=10)
         ctrl_frame.pack(fill="x", padx=5, pady=5, anchor="n")
 
-        # 自動検索ボタン付きIP入力欄
         ip_row = ctk.CTkFrame(ctrl_frame, fg_color="transparent")
         ip_row.pack(fill="x", padx=10, pady=(5, 2))
-        ctk.CTkLabel(ip_row, text="接続先ホストの IPv4 アドレス:", font=("Helvetica", 11, "bold")).pack(side="left", anchor="w")
-        ctk.CTkButton(ip_row, text="🔍 ホストを自動検索", width=130, height=25, fg_color="#2b5282", hover_color="#214166", command=self.auto_discover_host).pack(side="right")
+        ctk.CTkLabel(ip_row, text="接続先ホストの IPアドレス (ローカル または グローバル):", font=("Helvetica", 11, "bold")).pack(side="left", anchor="w")
+        ctk.CTkButton(ip_row, text="🔍 同ネット内ホスト自動検索", width=160, height=25, fg_color="#2b5282", hover_color="#214166", command=self.auto_discover_host).pack(side="right")
 
         self.client_ip_entry = ctk.CTkEntry(ctrl_frame, height=30)
         self.client_ip_entry.pack(fill="x", padx=10, pady=(0, 5))
@@ -266,7 +283,7 @@ class AECPApp(ctk.CTk):
         self.client_pass_entry.pack(fill="x", padx=10, pady=(0, 8))
         self.client_pass_entry.insert(0, self.config_data.get("session_password", "AECP_SECRET_2026"))
 
-        self.btn_client_toggle = ctk.CTkButton(ctrl_frame, text="🔗 TCPサーバーに接続 (ログイン)", fg_color="#2b8252", hover_color="#216641", height=38, font=("Helvetica", 12, "bold"), command=self.toggle_client_session)
+        self.btn_client_toggle = ctk.CTkButton(ctrl_frame, text="🔗 サーバーに接続 (ログイン)", fg_color="#2b8252", hover_color="#216641", height=38, font=("Helvetica", 12, "bold"), command=self.toggle_client_session)
         self.btn_client_toggle.pack(fill="x", padx=10, pady=(0, 10))
 
         multi_frame = ctk.CTkFrame(tab, fg_color="transparent")
@@ -316,21 +333,99 @@ class AECPApp(ctk.CTk):
         self.client_cmd_entry.bind("<Return>", lambda e: self.send_client_command())
         ctk.CTkButton(cmd_input_row, text="実行", width=70, height=30, fg_color="#991B1B", hover_color="#7F1D1D", command=self.send_client_command).pack(side="left")
 
-    # ==================== 自動ファイアウォール設定 & ホスト自動検索 ====================
+    # ==================== 自動ネットワーク設定 (FW & UPnP) ====================
     def apply_firewall_rules(self):
-        """Windowsファイアウォールにポートの例外ルールを自動追加する"""
         try:
-            # TCPポート9876の許可ルールを追加
             cmd_tcp = f'netsh advfirewall firewall add rule name="AECP_TCP_{DEFAULT_PORT}" dir=in action=allow protocol=TCP localport={DEFAULT_PORT}'
             subprocess.run(cmd_tcp, shell=True, capture_output=True)
-            # UDPポート9877の許可ルールを追加（自動検索用）
             cmd_udp = f'netsh advfirewall firewall add rule name="AECP_UDP_{DISCOVERY_PORT}" dir=in action=allow protocol=UDP localport={DISCOVERY_PORT}'
             subprocess.run(cmd_udp, shell=True, capture_output=True)
         except Exception:
             pass
 
+    def add_upnp_port_mapping(self):
+        """UPnPを使ってルーターにポート開放を自動リクエストする"""
+        def upnp_thread():
+            try:
+                # 1. SSDP M-SEARCH
+                ssdp_request = (
+                    'M-SEARCH * HTTP/1.1\r\n'
+                    'HOST: 239.255.255.250:1900\r\n'
+                    'MAN: "ssdp:discover"\r\n'
+                    'MX: 2\r\n'
+                    'ST: urn:schemas-upnp-org:device:InternetGatewayDevice:1\r\n'
+                    '\r\n'
+                ).encode('utf-8')
+                
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+                sock.settimeout(2.0)
+                sock.sendto(ssdp_request, ('239.255.255.250', 1900))
+                
+                location = None
+                while True:
+                    try:
+                        data, _ = sock.recvfrom(1024)
+                        for line in data.decode('utf-8', errors='ignore').split('\r\n'):
+                            if line.lower().startswith('location:'):
+                                location = line.split(':', 1)[1].strip()
+                                break
+                        if location: break
+                    except socket.timeout:
+                        break
+                sock.close()
+                if not location: return
+
+                # 2. Control URL 取得
+                xml_data = urllib.request.urlopen(location, timeout=2).read()
+                root = ET.fromstring(xml_data)
+                control_url, service_type = None, None
+                for service in root.iter():
+                    if service.tag.endswith('service'):
+                        st = service.find('{*}serviceType')
+                        if st is not None and ('WANIPConnection' in st.text or 'WANPPPConnection' in st.text):
+                            cu = service.find('{*}controlURL')
+                            if cu is not None and cu.text:
+                                control_url = cu.text
+                                service_type = st.text
+                                break
+                if not control_url: return
+
+                parsed_url = urllib.parse.urlparse(location)
+                if not control_url.startswith('http'):
+                    control_url = f"{parsed_url.scheme}://{parsed_url.netloc}{control_url}"
+
+                # 3. SOAP リクエスト送信 (AddPortMapping)
+                soap_body = f"""<?xml version="1.0"?>
+                <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+                  <s:Body>
+                    <u:AddPortMapping xmlns:u="{service_type}">
+                      <NewRemoteHost></NewRemoteHost>
+                      <NewExternalPort>{DEFAULT_PORT}</NewExternalPort>
+                      <NewProtocol>TCP</NewProtocol>
+                      <NewInternalPort>{DEFAULT_PORT}</NewInternalPort>
+                      <NewInternalClient>{self.my_local_ipv4}</NewInternalClient>
+                      <NewEnabled>1</NewEnabled>
+                      <NewPortMappingDescription>AECP Auto Port Forward</NewPortMappingDescription>
+                      <NewLeaseDuration>0</NewLeaseDuration>
+                    </u:AddPortMapping>
+                  </s:Body>
+                </s:Envelope>"""
+
+                req = urllib.request.Request(
+                    control_url,
+                    data=soap_body.encode('utf-8'),
+                    headers={
+                        'Content-Type': 'text/xml; charset="utf-8"',
+                        'SOAPAction': f'"{service_type}#AddPortMapping"'
+                    },
+                    method='POST'
+                )
+                urllib.request.urlopen(req, timeout=3)
+            except Exception:
+                pass
+        threading.Thread(target=upnp_thread, daemon=True).start()
+
     def start_discovery_responder(self):
-        """ホスト側：クライアントからの自動検索ブロードキャストに応答するリスナー"""
         try:
             self.discovery_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.discovery_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -340,7 +435,7 @@ class AECPApp(ctk.CTk):
                     self.discovery_socket.settimeout(1.0)
                     data, addr = self.discovery_socket.recvfrom(1024)
                     if data == b"AECP_DISCOVER_REQUEST":
-                        response = f"AECP_HOST_RESPONSE:{self.my_ipv4}".encode('utf-8')
+                        response = f"AECP_HOST_RESPONSE:{self.my_local_ipv4}".encode('utf-8')
                         self.discovery_socket.sendto(response, addr)
                 except socket.timeout:
                     continue
@@ -350,8 +445,7 @@ class AECPApp(ctk.CTk):
             pass
 
     def auto_discover_host(self):
-        """クライアント側：LAN内のホストを自動で探してIPアドレスをセットする"""
-        self.client_console.insert("end", "[System] ネットワーク上のホストを自動検索中...\n")
+        self.client_console.insert("end", "[System] 同ネットワーク内のホストを自動検索中...\n")
         self.client_console.see("end")
 
         def discover_thread():
@@ -369,16 +463,14 @@ class AECPApp(ctk.CTk):
             except Exception:
                 pass
 
-            # UIスレッドで結果を反映
             def update_ui():
                 if found_ip:
                     self.client_ip_entry.delete(0, "end")
                     self.client_ip_entry.insert(0, found_ip)
                     self.client_console.insert("end", f"[System] ホストを発見しました！ IP: {found_ip}\n")
                 else:
-                    self.client_console.insert("end", "[System] ホストが見つかりませんでした。IPアドレスを直接入力してください。\n")
+                    self.client_console.insert("end", "[System] 同ネット内で見つかりませんでした（別ネットの場合はホストのグローバルIPを入力してください）。\n")
                 self.client_console.see("end")
-            
             self.after(0, update_ui)
 
         threading.Thread(target=discover_thread, daemon=True).start()
@@ -434,8 +526,7 @@ class AECPApp(ctk.CTk):
 
     def handle_command(self, cmd_text, is_host=True):
         parts = cmd_text.strip().split()
-        if not parts:
-            return
+        if not parts: return
         cmd = parts[0].lower()
 
         name = "Host" if is_host else self.config_data.get("display_name", "User")
@@ -502,10 +593,8 @@ class AECPApp(ctk.CTk):
                 log_sys("エディターを閉じました。")
 
             elif cmd == "disconnect":
-                if is_host:
-                    self.toggle_host_session()
-                else:
-                    self.toggle_client_session()
+                if is_host: self.toggle_host_session()
+                else: self.toggle_client_session()
 
         except Exception as e:
             log_sys(f"[ERROR] コマンド実行エラー: {e}")
@@ -547,8 +636,9 @@ class AECPApp(ctk.CTk):
             pwd = self.host_pass_entry.get().strip()
             self.save_config("session_password", pwd)
 
-            # ファイアウォールに自動例外追加
+            # ファイアウォール自動例外追加 ＆ UPnPポート開放自動化
             self.apply_firewall_rules()
+            self.add_upnp_port_mapping()
 
             try:
                 self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -564,7 +654,7 @@ class AECPApp(ctk.CTk):
 
             threading.Thread(target=self.host_accept_loop, daemon=True).start()
             threading.Thread(target=self.start_discovery_responder, daemon=True).start()
-            self.host_console.insert("end", f"[Host] TCPサーバーをポート {DEFAULT_PORT} で開設しました（ファイアウォール自動設定完了）。\n")
+            self.host_console.insert("end", f"[Host] TCPサーバーをポート {DEFAULT_PORT} で開設しました。\n")
         else:
             self.is_host_active = False
             try:
@@ -577,7 +667,7 @@ class AECPApp(ctk.CTk):
                 except Exception: pass
             self.client_connections.clear()
 
-            self.btn_host_toggle.configure(text="🚀 TCPサーバー開設 (自動設定付き)", fg_color="#2b8252", hover_color="#216641")
+            self.btn_host_toggle.configure(text="🚀 TCPサーバー開設 (UPnP自動開放＋FW解除)", fg_color="#2b8252", hover_color="#216641")
             self.host_console.insert("end", "[Host] TCPサーバーを停止しました。\n")
 
     def host_accept_loop(self):
@@ -623,12 +713,12 @@ class AECPApp(ctk.CTk):
             display_name = self.config_data.get("display_name", "User")
 
             if not host_ip:
-                messagebox.showerror("エラー", "接続先ホストのIPv4アドレスを入力してください（「ホストを自動検索」も使えます）。")
+                messagebox.showerror("エラー", "接続先ホストのIPアドレスを入力してください。")
                 return
 
             try:
                 self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.client_socket.settimeout(4.0)
+                self.client_socket.settimeout(5.0)
                 self.client_socket.connect((host_ip, DEFAULT_PORT))
                 self.client_socket.settimeout(None)
             except Exception as e:
@@ -636,8 +726,9 @@ class AECPApp(ctk.CTk):
                     "接続エラー", 
                     f"ホスト ({host_ip}) への接続に失敗しました。\n\n"
                     f"【確認ポイント】\n"
-                    f"1. ホスト側PCで「TCPサーバー開設」が緑色ボタンになっているか\n"
-                    f"2. 両方のPCが同じWi-Fi（またはネットワーク）に接続しているか\n\n"
+                    f"1. ホスト側でサーバーが起動しているか\n"
+                    f"2. **同ネットワーク**: ローカルIPを入力しているか\n"
+                    f"3. **別ネットワーク**: グローバルIPが正しく、ルーターのポート(9876)が通じているか\n\n"
                     f"詳細: {e}"
                 )
                 return
@@ -662,7 +753,7 @@ class AECPApp(ctk.CTk):
                 if self.client_socket: self.client_socket.close()
             except Exception:
                 pass
-            self.btn_client_toggle.configure(text="🔗 TCPサーバーに接続 (ログイン)", fg_color="#2b8252", hover_color="#216641")
+            self.btn_client_toggle.configure(text="🔗 サーバーに接続 (ログイン)", fg_color="#2b8252", hover_color="#216641")
             self.client_console.insert("end", "[Client] 切断しました。\n")
 
     def client_receive_loop(self):
